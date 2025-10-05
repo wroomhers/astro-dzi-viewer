@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <title>DZI Viewer + Annotations</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { --bg:#0f0f10; --fg:#e7e7ea; --muted:#9aa0a6; --accent:#3da9ff; --danger:#ff5b5b; }
+    html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    #openseadragon{position:absolute;inset:64px 0 0 0;background:#111}
+    .toolbar{
+      position:fixed;top:0;left:0;right:0;height:64px;display:flex;gap:.5rem;align-items:center;
+      padding:.5rem .75rem;background:#000c;backdrop-filter:saturate(120%) blur(6px);border-bottom:1px solid #222;z-index:50
+    }
+    .btn{padding:.45rem .7rem;border:1px solid #333;background:#1a1a1a;color:var(--fg);border-radius:.5rem;cursor:pointer}
+    .btn.primary{outline:2px solid var(--accent)}
+    .btn.danger{border-color:#442222;background:#1a0f0f}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    .chip{display:inline-flex;align-items:center;gap:.4rem;border:1px solid #333;background:#171717;padding:.35rem .6rem;border-radius:.5rem}
+    .form{
+      position:fixed;right:20px;top:72px;width:360px;background:#0f141a;border:1px solid #223041;border-radius:.75rem;box-shadow:0 10px 30px rgba(0,0,0,.35);z-index:60;display:none
+    }
+    .form header{padding:.6rem .75rem;border-bottom:1px solid #243043;font-weight:600}
+    .form .body{padding:.6rem .75rem;display:grid;grid-template-columns:1fr 1fr;gap:.5rem}
+    .form .body label{font-size:.85rem;color:var(--muted)}
+    .form .body input,.form .body textarea,.form .body select{
+      width:100%;border:1px solid #2b2f36;background:#0b0e12;color:var(--fg);border-radius:.5rem;padding:.45rem .55rem
+    }
+    .form .body textarea{grid-column:1/-1;min-height:84px;resize:vertical}
+    .form footer{display:flex;gap:.5rem;justify-content:flex-end;padding:.6rem .75rem;border-top:1px solid #243043}
+    .hint { position:fixed; bottom:.5rem; left:.75rem; font-size:.85rem; opacity:.75; background:#0008; padding:.35rem .55rem; border-radius:.4rem; z-index:70}
+    /* Box overlay görünümleri */
+    .anno-box{
+      position:absolute;border:2px solid rgba(61,169,255,.95);background:rgba(61,169,255,.12);box-shadow:0 0 0 1px rgba(0,0,0,.35) inset;
+      pointer-events:auto;
+    }
+    .anno-box.active{border-color:#ffd166;background:rgba(255,209,102,.15)}
+    .ghost{border-style:dashed;opacity:.8}
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.1/openseadragon.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="btnDraw" class="btn">Çizim Modu</button>
+    <button id="btnCancel" class="btn" disabled>İptal</button>
+    <span class="chip"><input type="checkbox" id="chkShow" checked/> Kutuları göster</span>
+    <span class="chip"><input type="checkbox" id="chkLabels" checked/> Etiketleri göster</span>
+    <span style="margin-left:auto;color:#9aa0a6">Görüntü: <b id="imgName">olu</b></span>
+  </div>
+
+  <div id="openseadragon"></div>
+
+  <div class="form" id="form">
+    <header>Yıldız Bilgileri</header>
+    <div class="body">
+      <div style="grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+        <div><label>Ad/Katalog</label><input id="f_name" placeholder="Örn: Betelgeuse / HIP..." /></div>
+        <div><label>Tür</label>
+          <select id="f_type">
+            <option value="Star">Star</option>
+            <option value="Galaxy">Galaxy</option>
+            <option value="Nebula">Nebula</option>
+            <option value="Cluster">Cluster</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+      </div>
+      <div><label>Görünür kadir (mag)</label><input id="f_mag" type="number" step="0.01" placeholder="Örn: 0.42" /></div>
+      <div><label>Renk/B-V</label><input id="f_bv" placeholder="opsiyonel" /></div>
+      <label style="grid-column:1/-1">Notlar</label>
+      <textarea id="f_notes" placeholder="Kaynak, tarih, gözlem notu vb."></textarea>
+    </div>
+    <footer>
+      <button class="btn danger" id="btnDelete">Sil</button>
+      <button class="btn" id="btnClose">Kapat</button>
+      <button class="btn primary" id="btnSave">Kaydet</button>
+    </footer>
+  </div>
+
+  <div class="hint">
+    Çizim Modu: basılı tutup sürükle. Bırakınca form açılır. Mevcut kutuya tıklayınca düzenlersin. Kaydet/Sil sonrası otomatik yazılır.
+  </div>
+
+  <script>
+    // ------- Başlangıç değişkenleri -------
+    const DZI_BASE = "olu";
+    const DZI_FILE = "olu.dzi";
+    const API_GET  = "/api/annotations/" + encodeURIComponent(DZI_BASE);
+    const API_POST = API_GET;
+    document.getElementById('imgName').textContent = DZI_BASE;
+
+    // ------- OSD init -------
+    const viewer = OpenSeadragon({
+      id: "openseadragon",
+      prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.1/images/",
+      showNavigator: true,
+      animationTime: 0.8,
+      blendTime: 0.2,
+      maxZoomPixelRatio: 15.5,
+      visibilityRatio: 1.0,
+      constrainDuringPan: true,
+      minZoomLevel: 0.5
+    });
+    viewer.open(DZI_FILE);
+
+    // ------- Annotation state -------
+    let annotations = { image: DZI_BASE, boxes: [] }; // [{id,x,y,w,h,name,type,mag,bv,notes,created}]
+    let drawMode = false;
+    let drawing = null; // {start:Point(img), rect, ghostEl}
+    let activeId = null;
+    const btnDraw = document.getElementById('btnDraw');
+    const btnCancel = document.getElementById('btnCancel');
+
+    // Form refs
+    const form = document.getElementById('form');
+    const f_name = document.getElementById('f_name');
+    const f_type = document.getElementById('f_type');
+    const f_mag  = document.getElementById('f_mag');
+    const f_bv   = document.getElementById('f_bv');
+    const f_notes= document.getElementById('f_notes');
+    const btnSave = document.getElementById('btnSave');
+    const btnDelete = document.getElementById('btnDelete');
+    const btnClose  = document.getElementById('btnClose');
+
+    // ------- Yardımcılar -------
+    function uuid(){ return (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)) }
+    function imgPtFromEvent(e){
+      const webPt = e.position; // web pixels
+      const vpPt = viewer.viewport.pointFromPixel(webPt, true);
+      const imgPt = viewer.viewport.viewportToImageCoordinates(vpPt);
+      return imgPt;
+    }
+    function rectToBounds(r){
+      const topLeft = viewer.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(r.x, r.y));
+      const botRight= viewer.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(r.x + r.w, r.y + r.h));
+      return new OpenSeadragon.Rect(topLeft.x, topLeft.y, botRight.x - topLeft.x, botRight.y - topLeft.y);
+    }
+    function boundsToCss(bounds){
+      const topLeftPx = viewer.viewport.pixelFromPoint(new OpenSeadragon.Point(bounds.x, bounds.y), true);
+      const botRightPx= viewer.viewport.pixelFromPoint(new OpenSeadragon.Point(bounds.x + bounds.width, bounds.y + bounds.height), true);
+      return {
+        left: topLeftPx.x, top: topLeftPx.y,
+        width: botRightPx.x - topLeftPx.x, height: botRightPx.y - topLeftPx.y
+      };
+    }
+
+    // Ekrana kutu çizimi (DOM overlay)
+    const overlayLayer = document.createElement('div');
+    overlayLayer.style.position = 'absolute';
+    overlayLayer.style.inset = '0';
+    overlayLayer.style.pointerEvents = 'none'; // çizimde engel olmasın
+    viewer.addHandler('open', () => {
+      viewer.canvas.parentElement.appendChild(overlayLayer);
+      refreshAllOverlays();
+    });
+
+    function makeBoxEl(id, ghost=false){
+      const el = document.createElement('div');
+      el.className = 'anno-box' + (ghost ? ' ghost' : '');
+      el.dataset.id = id || '';
+      overlayLayer.appendChild(el);
+      return el;
+    }
+    function placeElFromRect(el, r){
+      const b = rectToBounds(r);
+      const css = boundsToCss(b);
+      el.style.left = css.left + 'px';
+      el.style.top  = css.top  + 'px';
+      el.style.width= css.width+ 'px';
+      el.style.height=css.height+'px';
+      el.style.display = (document.getElementById('chkShow').checked ? 'block' : 'none');
+    }
+    function refreshAllOverlays(){
+      overlayLayer.querySelectorAll('.anno-box:not(.ghost)').forEach(n => n.remove());
+      (annotations.boxes || []).forEach(r => {
+        const el = makeBoxEl(r.id, false);
+        placeElFromRect(el, r);
+        if (r.id === activeId) el.classList.add('active');
+        if (document.getElementById('chkLabels').checked) {
+          const lbl = document.createElement('div');
+          lbl.style.position='absolute'; lbl.style.left='0'; lbl.style.top='-1.35rem';
+          lbl.style.fontSize='12px'; lbl.style.padding='2px 6px';
+          lbl.style.background='rgba(0,0,0,.65)'; lbl.style.border='1px solid #223'; lbl.style.borderRadius='4px';
+          lbl.style.whiteSpace='nowrap';
+          lbl.textContent = (r.name || 'N/A') + (r.mag ? ` (mag ${r.mag})` : '');
+          el.appendChild(lbl);
+        }
+        // Kutuya tıklayınca düzenleme
+        el.style.pointerEvents = 'auto';
+        el.addEventListener('click', (ev) => { ev.stopPropagation(); openEdit(r.id); }, {passive:true});
+      });
+    }
+    viewer.addHandler('viewport-change', () => {
+      overlayLayer.querySelectorAll('.anno-box').forEach(el => {
+        if (el.classList.contains('ghost')) {
+          if (drawing && drawing.rect) placeElFromRect(el, drawing.rect);
+        } else {
+          const r = annotations.boxes.find(b => b.id === el.dataset.id);
+          if (r) placeElFromRect(el, r);
+        }
+      });
+    });
+
+    // ------- Çizim modunda nav jestlerini devre dışı bırak -------
+    let prevMouseGestures = null;
+    let prevTouchGestures = null;
+
+    function setDrawMode(on){
+      drawMode = on;
+      btnDraw.classList.toggle('primary', on);
+      btnCancel.disabled = !on;
+
+      if (on) {
+        // Önceki ayarları sakla
+        prevMouseGestures = { ...viewer.gestureSettingsMouse };
+        prevTouchGestures = { ...viewer.gestureSettingsTouch };
+
+        // Navigasyonu tamamen kapatma; event’ler gelmeye devam etsin
+        // Sadece pan/zoom jestlerini kapat
+        Object.assign(viewer.gestureSettingsMouse, {
+          clickToZoom: false,
+          dblClickToZoom: false,
+          dragToPan: false,
+          scrollToZoom: false,
+          pinchToZoom: false,
+          flickEnabled: false
+        });
+        Object.assign(viewer.gestureSettingsTouch, {
+          pinchToZoom: false,
+          flickEnabled: false,
+          dragToPan: false
+        });
+      } else {
+        // Eski ayarları geri yükle
+        if (prevMouseGestures) Object.assign(viewer.gestureSettingsMouse, prevMouseGestures);
+        if (prevTouchGestures) Object.assign(viewer.gestureSettingsTouch, prevTouchGestures);
+        prevMouseGestures = prevTouchGestures = null;
+
+        if (drawing && drawing.ghostEl) drawing.ghostEl.remove();
+        drawing = null;
+      }
+    }
+    btnDraw.addEventListener('click', () => setDrawMode(!drawMode));
+    btnCancel.addEventListener('click', () => setDrawMode(false));
+    document.getElementById('chkShow').addEventListener('change', refreshAllOverlays);
+    document.getElementById('chkLabels').addEventListener('change', refreshAllOverlays);
+
+    // ------- Çizim akışı (press/drag/release) + default action iptali -------
+    viewer.addHandler('canvas-press', (e) => {
+      if (!drawMode) return;
+      e.preventDefaultAction = true; // pan başlangıcını engelle
+      const imgPt = imgPtFromEvent(e);
+      drawing = { start: imgPt, rect: {x: imgPt.x, y: imgPt.y, w: 1, h: 1}, ghostEl: makeBoxEl('', true) };
+    });
+    viewer.addHandler('canvas-drag', (e) => {
+      if (!drawMode || !drawing) return;
+      e.preventDefaultAction = true; // sürüklemede pan'ı engelle
+      const cur = imgPtFromEvent(e);
+      const x0 = Math.min(drawing.start.x, cur.x);
+      const y0 = Math.min(drawing.start.y, cur.y);
+      const w  = Math.abs(cur.x - drawing.start.x);
+      const h  = Math.abs(cur.y - drawing.start.y);
+      drawing.rect = {x:x0, y:y0, w:w, h:h};
+      placeElFromRect(drawing.ghostEl, drawing.rect);
+    });
+    viewer.addHandler('canvas-release', (e) => {
+      if (!drawMode || !drawing) return;
+      e.preventDefaultAction = true; // bırakmada da güvene al
+      if (drawing.rect.w < 5 || drawing.rect.h < 5) {
+        drawing.ghostEl.remove(); drawing = null; return;
+      }
+      const id = uuid();
+      const r = Object.assign({id, name:'', type:'Star', mag:'', bv:'', notes:'', created: new Date().toISOString()}, drawing.rect);
+      drawing.ghostEl.remove(); drawing = null;
+      annotations.boxes.push(r);
+      activeId = id;
+      refreshAllOverlays();
+      openEdit(id);
+      setDrawMode(false);
+    });
+
+    // Çizim modunda scroll zoom ve click/double-click zoom'u da engelle
+    viewer.addHandler('canvas-scroll', (e) => { if (drawMode) { e.preventDefaultAction = true; } });
+    viewer.addHandler('canvas-click', (e) => { if (drawMode) { e.preventDefaultAction = true; } });
+    viewer.addHandler('canvas-double-click', (e) => { if (drawMode) { e.preventDefaultAction = true; } });
+
+    // ------- Liste (kaldırıldı) -------
+    function refreshList(){
+      // Sidebar kaldırıldığı için boş fonksiyon
+    }
+
+    // ------- Form -------
+    function openEdit(id){
+      activeId = id;
+      const r = (annotations.boxes || []).find(x=>x.id===id);
+      if (!r) return;
+      overlayLayer.querySelectorAll('.anno-box').forEach(el => {
+        if (!el.classList.contains('ghost')) el.classList.toggle('active', el.dataset.id === id);
+      });
+      f_name.value = r.name || '';
+      f_type.value = r.type || 'Star';
+      f_mag.value  = r.mag || '';
+      f_bv.value   = r.bv || '';
+      f_notes.value= r.notes || '';
+      form.style.display = 'block';
+    }
+    btnClose.addEventListener('click', ()=> form.style.display='none');
+    btnSave.addEventListener('click', async ()=>{
+      const r = (annotations.boxes || []).find(x=>x.id===activeId);
+      if (!r) return;
+      r.name = f_name.value.trim();
+      r.type = f_type.value;
+      r.mag  = f_mag.value;
+      r.bv   = f_bv.value.trim();
+      r.notes= f_notes.value.trim();
+      await saveAnnotations();
+      form.style.display = 'none';
+      refreshAllOverlays();
+    });
+    btnDelete.addEventListener('click', async ()=>{
+      if (!activeId) return;
+      annotations.boxes = (annotations.boxes || []).filter(x=>x.id!==activeId);
+      activeId = null;
+      await saveAnnotations();
+      form.style.display = 'none';
+      refreshAllOverlays();
+    });
+
+    // ------- Sunucu ile kaydet/yükle -------
+    async function loadAnnotations(){
+      try{
+        const res = await fetch(API_GET, {cache:'no-cache'});
+        if (!res.ok) throw new Error('HTTP '+res.status);
+        const data = await res.json();
+        if (data && data.image === DZI_BASE && Array.isArray(data.boxes)) {
+          annotations = data;
+        } else {
+          annotations = {image:DZI_BASE, boxes:[]};
+        }
+      }catch(e){
+        annotations = {image:DZI_BASE, boxes:[]};
+      }
+      refreshAllOverlays();
+    }
+    async function saveAnnotations(){
+      const res = await fetch(API_POST, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(annotations)
+      });
+      if (!res.ok) alert('Kaydetme hatası: HTTP '+res.status);
+    }
+
+    // İlk yükle
+    loadAnnotations();
+  </script>
+</body>
+</html>

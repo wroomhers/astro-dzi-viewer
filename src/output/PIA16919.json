@@ -1,0 +1,8 @@
+{
+  "dzi": "./output/PIA16919.dzi",
+  "tiles_dir": "./output/PIA16919_files",
+  "tile": 512,
+  "format": "jpg",
+  "overlap": 0,
+  "backend_used": "vips/cli"
+}

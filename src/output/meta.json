@@ -1,0 +1,11 @@
+{
+  "images": [
+    {
+      "src": "./output/olu.dzi",
+      "tiles_dir": "./output/olu_files",
+      "tile": 256,
+      "format": "jpg",
+      "overlap": 0
+    }
+  ]
+}

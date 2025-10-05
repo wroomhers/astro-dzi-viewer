@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <title>DZI Compare (Dinamik)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { --bg:#111; --fg:#ddd; --accent:#3da9ff; }
+    html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+    .toolbar {
+      position:fixed; top:0; left:0; right:0; z-index:9999;
+      display:flex; gap:.75rem; align-items:center; flex-wrap:wrap;
+      padding:.6rem .8rem; background:#000c; backdrop-filter:saturate(120%) blur(6px); border-bottom:1px solid #222;
+    }
+    .toolbar label { font-size:.9rem; opacity:.95; }
+    .toolbar input[type="range"] { width:190px; vertical-align:middle; }
+    .toolbar select { background:#1a1a1a; color:var(--fg); border:1px solid #333; border-radius:.5rem; padding:.3rem .5rem; }
+    .toolbar .modebtn, .toolbar .chip {
+      padding:.35rem .6rem; border:1px solid #333; background:#1a1a1a; color:var(--fg); border-radius:.5rem; cursor:pointer;
+    }
+    .toolbar .modebtn.active { outline:2px solid var(--accent); }
+    .viewer-wrap { position:absolute; top:78px; left:0; right:0; bottom:0; }
+    #overlayContainer, #splitContainer { width:100%; height:100%; display:none; }
+    #overlayContainer { position:relative; }
+    #osdOverlay { position:absolute; inset:0; background:#111; }
+    #splitContainer { display:flex; gap:2px; }
+    .pane { flex:1 1 50%; position:relative; min-width:0; }
+    .pane > div { position:absolute; inset:0; }
+    .hint { position:fixed; bottom:.5rem; left:.75rem; font-size:.85rem; opacity:.75; background:#0008; padding:.35rem .55rem; border-radius:.4rem; }
+    .sep { width:1px; height:22px; background:#333; margin:0 .5rem; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.1/openseadragon.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="btnOverlay" class="modebtn active" title="Üst üste karşılaştır">Overlay</button>
+    <button id="btnSplit" class="modebtn" title="Yan yana karşılaştır">Yan yana</button>
+
+    <div class="sep"></div>
+
+    <label>Image A:
+      <select id="selA"></select>
+    </label>
+    <label>Image B:
+      <select id="selB"></select>
+    </label>
+
+    <div class="sep"></div>
+
+    <label>Aktif katman:
+      <select id="activeLayer">
+        <option value="top">Üst</option>
+        <option value="bottom" selected>Alt</option>
+      </select>
+    </label>
+
+    <label>Opaklık (üst):
+      <input id="alphaTop" type="range" min="0" max="1" step="0.01" value="0.5">
+      <span id="alphaTopVal">0.50</span>
+    </label>
+
+    <label>Ölçek (üst):
+      <input id="scaleTop" type="range" min="0.25" max="4" step="0.01" value="1.00">
+      <span id="scaleTopVal">1.00×</span>
+    </label>
+
+    <label>Ölçek (alt):
+      <input id="scaleBottom" type="range" min="0.25" max="4" step="0.01" value="1.00">
+      <span id="scaleBottomVal">1.00×</span>
+    </label>
+
+    <label class="chip" style="display:flex; align-items:center; gap:.4rem;">
+      <input type="checkbox" id="lockLayers">
+      Katman kilidi (pan/zoom beraber)
+    </label>
+
+    <button id="btnSwap" class="modebtn" title="Katmanları değiştir">Katman Değiştir</button>
+
+    <div class="sep"></div>
+
+    <label>
+      <input type="checkbox" id="syncChk" checked> Senkron kaydır/zoom (yan yana)
+    </label>
+  </div>
+
+  <div class="viewer-wrap">
+    <div id="overlayContainer" style="display:block;">
+      <div id="osdOverlay"></div>
+    </div>
+    <div id="splitContainer">
+      <div class="pane"><div id="osdLeft"></div></div>
+      <div class="pane"><div id="osdRight"></div></div>
+    </div>
+  </div>
+
+  <div class="hint">
+    Kaynakları üstten seç. Overlay: kilit kapalıyken sürükleme <b>Aktif katman</b>ı hareket ettirir. Kısayol: <b>Alt=Üst</b>, <b>Shift=Alt</b>.
+    Ölçek: Alt+tekerlek → üst, Shift+tekerlek → alt, aksi halde aktif katman. Yan yana: “Senkron”u kapatınca bağımsız.
+  </div>
+
+  <script>
+    const selA = document.getElementById('selA');
+    const selB = document.getElementById('selB');
+    const activeLayerSel = document.getElementById('activeLayer');
+    const alphaTopEl = document.getElementById('alphaTop');
+    const alphaTopVal = document.getElementById('alphaTopVal');
+    const scaleTopEl = document.getElementById('scaleTop');
+    const scaleTopVal = document.getElementById('scaleTopVal');
+    const scaleBottomEl = document.getElementById('scaleBottom');
+    const scaleBottomVal = document.getElementById('scaleBottomVal');
+    const btnOverlay = document.getElementById('btnOverlay');
+    const btnSplit = document.getElementById('btnSplit');
+    const btnSwap = document.getElementById('btnSwap');
+    const syncChk = document.getElementById('syncChk');
+    const lockLayers = document.getElementById('lockLayers');
+
+    let list = [];
+    let topIsA = true;
+    let topScale = 1.0, bottomScale = 1.0;
+
+    function basename(p){
+      const s = p.replace(/\\/g,'/').split('/').pop();
+      return s.replace(/\.dzi$/i,'');
+    }
+
+    async function loadList() {
+      try {
+        const res = await fetch('meta.json', {cache:'no-cache'});
+        const meta = await res.json();
+        const items = (meta.images || []).map(it => {
+          const base = basename(it.src || it.dzi || '');
+          return { base, dzi: base + '.dzi' };
+        });
+        list = items;
+      } catch(e) {
+        list = [];
+      }
+      selA.innerHTML = '';
+      selB.innerHTML = '';
+      if (list.length === 0) {
+        const opt = new Option('Bulunamadı', '', true, true);
+        selA.add(opt.cloneNode(true));
+        selB.add(opt);
+      } else if (list.length === 1) {
+        selA.add(new Option(list[0].base, list[0].base, true, true));
+        selB.add(new Option('— Yok —', '', true, true));
+      } else {
+        list.forEach((it, i) => {
+          selA.add(new Option(it.base, it.base, i===0, i===0));
+          selB.add(new Option(it.base, it.base, i===1, i===1));
+        });
+      }
+      updateControlStates();
+      refreshAll();
+    }
+
+    function findDzi(base){ const it = list.find(x=>x.base===base); return it ? it.dzi : null; }
+    function currentSources(){
+      const a = findDzi(selA.value);
+      const b = findDzi(selB.value);
+      return {a,b};
+    }
+
+    function updateControlStates() {
+      const hasTop = !!findDzi(selB.value);
+      alphaTopEl.disabled = !hasTop;
+      scaleTopEl.disabled = !hasTop;
+      btnSwap.disabled = !hasTop;
+      lockLayers.disabled = !hasTop;
+
+      activeLayerSel.value = hasTop ? activeLayerSel.value : 'bottom';
+      activeLayerSel.disabled = !hasTop;
+    }
+    selA.addEventListener('change', () => { updateControlStates(); });
+
+    let overlayViewer = OpenSeadragon({
+      id: "osdOverlay",
+      prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.1/images/",
+      showNavigator: true,
+      animationTime: 0.8,
+      blendTime: 0.2,
+      maxZoomPixelRatio: 15.5,
+      visibilityRatio: 1.0,
+      constrainDuringPan: true,
+      minZoomLevel: 0.5
+    });
+    let itemBottom = null, itemTop = null;
+    let topRefWidth = null, bottomRefWidth = null;
+
+    function loadOverlay(aDzi, bDzi) {
+      overlayViewer.world.removeAll();
+      itemBottom = itemTop = null;
+      topRefWidth = bottomRefWidth = null;
+      if(!aDzi && !bDzi) return;
+
+      let bottomSrc = null, topSrc = null;
+      if (aDzi && bDzi) {
+        bottomSrc = topIsA ? bDzi : aDzi;
+        topSrc    = topIsA ? aDzi : bDzi;
+      } else {
+        bottomSrc = aDzi || bDzi;
+        topSrc = null;
+      }
+
+      overlayViewer.addTiledImage({
+        tileSource: bottomSrc,
+        success: function(ev) {
+          itemBottom = ev.item;
+          const ref = itemBottom.getBounds();
+          bottomRefWidth = ref.width;
+
+          if (topSrc) {
+            overlayViewer.addTiledImage({
+              tileSource: topSrc,
+              success: function(ev2) {
+                itemTop = ev2.item;
+                itemTop.setPosition(ref.getTopLeft(), true);
+                itemTop.setWidth(ref.width, true);
+                topRefWidth = ref.width;
+                itemTop.setOpacity(parseFloat(alphaTopEl.value));
+                applyScale(itemTop, topRefWidth, topScale);
+                applyScale(itemBottom, bottomRefWidth, bottomScale);
+              }
+            });
+          }
+        }
+      });
+    }
+
+    function applyScale(item, refWidth, scale) {
+      if (!item || refWidth == null) return;
+      const w = refWidth * scale;
+      const center = item.getBounds().getCenter();
+      item.setWidth(w, true);
+      const b = item.getBounds();
+      const shift = center.minus(b.getCenter());
+      item.setPosition(b.getTopLeft().plus(shift), true);
+    }
+
+    function pickLayerFromEvent(e) {
+      if (e && e.originalEvent && e.originalEvent.altKey) return 'top';
+      if (e && e.originalEvent && e.originalEvent.shiftKey) return 'bottom';
+      return activeLayerSel.value;
+    }
+
+    overlayViewer.addHandler('canvas-drag', function(e) {
+      if (document.getElementById('lockLayers').checked) return;
+      e.preventDefaultAction = true;
+      const target = (pickLayerFromEvent(e) === 'top') ? itemTop : itemBottom;
+      if (!target) return;
+      const deltaVp = overlayViewer.viewport.deltaPointsFromPixels(e.delta);
+      const b = target.getBounds();
+      target.setPosition(b.getTopLeft().minus(deltaVp), true);
+    });
+
+    overlayViewer.addHandler('canvas-scroll', function(e) {
+      if (document.getElementById('lockLayers').checked) return;
+      e.preventDefaultAction = true;
+      const which = pickLayerFromEvent(e);
+      const factor = (e.scroll > 0) ? 0.97 : 1.03;
+      if (which === 'top' && itemTop) {
+        topScale = Math.max(0.25, Math.min(4, topScale * factor));
+        document.getElementById('scaleTop').value = topScale.toFixed(2);
+        document.getElementById('scaleTopVal').textContent = topScale.toFixed(2) + "×";
+        applyScale(itemTop, topRefWidth, topScale);
+      } else if (which === 'bottom' && itemBottom) {
+        bottomScale = Math.max(0.25, Math.min(4, bottomScale * factor));
+        document.getElementById('scaleBottom').value = bottomScale.toFixed(2);
+        document.getElementById('scaleBottomVal').textContent = bottomScale.toFixed(2) + "×";
+        applyScale(itemBottom, bottomRefWidth, bottomScale);
+      }
+    });
+
+    document.getElementById('alphaTop').addEventListener('input', () => {
+      document.getElementById('alphaTopVal').textContent = parseFloat(document.getElementById('alphaTop').value).toFixed(2);
+      if (itemTop) itemTop.setOpacity(parseFloat(document.getElementById('alphaTop').value));
+    });
+    document.getElementById('scaleTop').addEventListener('input', () => {
+      topScale = parseFloat(document.getElementById('scaleTop').value);
+      document.getElementById('scaleTopVal').textContent = topScale.toFixed(2) + "×";
+      applyScale(itemTop, topRefWidth, topScale);
+    });
+    document.getElementById('scaleBottom').addEventListener('input', () => {
+      bottomScale = parseFloat(document.getElementById('scaleBottom').value);
+      document.getElementById('scaleBottomVal').textContent = bottomScale.toFixed(2) + "×";
+      applyScale(itemBottom, bottomRefWidth, bottomScale);
+    });
+    btnSwap.addEventListener('click', () => { topIsA = !topIsA; refreshOverlay(); });
+
+    let leftViewer = OpenSeadragon({
+      id: "osdLeft",
+      prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.1/images/",
+      showNavigator: true,
+      animationTime: 0.8,
+      blendTime: 0.2,
+      maxZoomPixelRatio: 15.5,
+      visibilityRatio: 1.0,
+      constrainDuringPan: true,
+      minZoomLevel: 0.5
+    });
+    let rightViewer = OpenSeadragon({
+      id: "osdRight",
+      prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.1/images/",
+      showNavigator: true,
+      animationTime: 0.8,
+      blendTime: 0.2,
+      maxZoomPixelRatio: 15.5,
+      visibilityRatio: 1.0,
+      constrainDuringPan: true,
+      minZoomLevel: 0.5
+    });
+
+    function loadSplit(aDzi, bDzi) {
+      if (aDzi) leftViewer.open(aDzi); else leftViewer.close();
+      if (bDzi) rightViewer.open(bDzi); else rightViewer.close();
+    }
+
+    let syncing = false;
+    function syncView(from, to) {
+      if (!syncChk.checked) return;
+      if (syncing) return;
+      try {
+        syncing = true;
+        const center = from.viewport.getCenter();
+        const zoom = from.viewport.getZoom();
+        to.viewport.zoomTo(zoom);
+        to.viewport.panTo(center);
+      } finally {
+        syncing = false;
+      }
+    }
+    leftViewer.addHandler('viewport-change', () => syncView(leftViewer, rightViewer));
+    rightViewer.addHandler('viewport-change', () => syncView(rightViewer, leftViewer));
+
+    function setMode(overlay) {
+      const ov = document.getElementById('overlayContainer');
+      const sp = document.getElementById('splitContainer');
+      if (overlay) {
+        ov.style.display = 'block';
+        sp.style.display = 'none';
+        btnOverlay.classList.add('active');
+        btnSplit.classList.remove('active');
+        refreshOverlay();
+      } else {
+        ov.style.display = 'none';
+        sp.style.display = 'flex';
+        btnOverlay.classList.remove('active');
+        btnSplit.classList.add('active');
+        refreshSplit();
+      }
+    }
+    btnOverlay.addEventListener('click', () => setMode(true));
+    btnSplit.addEventListener('click', () => setMode(false));
+
+    selA.addEventListener('change', ()=>{ updateControlStates(); refreshAll(); });
+    selB.addEventListener('change', ()=>{ updateControlStates(); refreshAll(); });
+
+    function refreshOverlay(){ const {a,b}=currentSources(); loadOverlay(a,b); }
+    function refreshSplit(){ const {a,b}=currentSources(); loadSplit(a,b); }
+    function refreshAll(){ refreshOverlay(); refreshSplit(); }
+
+    loadList();
+
+    window.addEventListener('resize', () => {
+      overlayViewer.viewport && overlayViewer.viewport.goHome(true);
+      leftViewer.viewport && leftViewer.viewport.goHome(true);
+      rightViewer.viewport && rightViewer.viewport.goHome(true);
+    });
+  </script>
+</body>
+</html>

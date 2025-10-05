@@ -1,0 +1,8 @@
+{
+  "dzi": "./output/potw1849a.dzi",
+  "tiles_dir": "./output/potw1849a_files",
+  "tile": 256,
+  "format": "jpg",
+  "overlap": 0,
+  "backend_used": "auto"
+}

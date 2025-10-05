@@ -1,0 +1,8 @@
+{
+  "dzi": "./output/heic0602a.dzi",
+  "tiles_dir": "./output/heic0602a_files",
+  "tile": 64,
+  "format": "jpg",
+  "overlap": 0,
+  "backend_used": "pyvips"
+}

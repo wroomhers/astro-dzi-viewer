@@ -1,0 +1,8 @@
+{
+  "dzi": "./output/Hubble_M31Mosaic_2025_42208x9870_STScI-01JGY8MZB6RAYKZ1V4CHGN37Q6.dzi",
+  "tiles_dir": "./output/Hubble_M31Mosaic_2025_42208x9870_STScI-01JGY8MZB6RAYKZ1V4CHGN37Q6_files",
+  "tile": 512,
+  "format": "jpg",
+  "overlap": 0,
+  "backend_used": "pyvips/python"
+}
